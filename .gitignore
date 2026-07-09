@@ -20,3 +20,7 @@ dist/
 build/
 *.egg-info/
 .DS_Store
+
+*.log
+test_real_*.json
+config/
