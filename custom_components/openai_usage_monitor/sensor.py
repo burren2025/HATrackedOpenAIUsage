@@ -14,13 +14,14 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import UnitOfInformation
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import CONF_API_KEY_ALIASES, CONF_ORG_NAME, CONF_PROJECT_ALIASES, DOMAIN
 from .coordinator import OpenAIUsageCoordinator, UsageAggregate
+
+TOKEN_UNIT = "tokens"
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -67,7 +68,7 @@ TOTAL_DESCRIPTIONS: tuple[OpenAISensorDescription, ...] = (
     OpenAISensorDescription(
         key="input_tokens_today",
         translation_key="input_tokens_today",
-        native_unit_of_measurement=UnitOfInformation.ITEMS,
+        native_unit_of_measurement=TOKEN_UNIT,
         state_class=SensorStateClass.TOTAL,
         icon="mdi:text-box-arrow-right",
         value_fn=lambda c: c.data.today.input_tokens,
@@ -75,7 +76,7 @@ TOTAL_DESCRIPTIONS: tuple[OpenAISensorDescription, ...] = (
     OpenAISensorDescription(
         key="output_tokens_today",
         translation_key="output_tokens_today",
-        native_unit_of_measurement=UnitOfInformation.ITEMS,
+        native_unit_of_measurement=TOKEN_UNIT,
         state_class=SensorStateClass.TOTAL,
         icon="mdi:text-box-arrow-left",
         value_fn=lambda c: c.data.today.output_tokens,
@@ -83,7 +84,7 @@ TOTAL_DESCRIPTIONS: tuple[OpenAISensorDescription, ...] = (
     OpenAISensorDescription(
         key="total_tokens_today",
         translation_key="total_tokens_today",
-        native_unit_of_measurement=UnitOfInformation.ITEMS,
+        native_unit_of_measurement=TOKEN_UNIT,
         state_class=SensorStateClass.TOTAL,
         icon="mdi:text-box-multiple",
         value_fn=lambda c: c.data.today.total_tokens,
@@ -91,7 +92,7 @@ TOTAL_DESCRIPTIONS: tuple[OpenAISensorDescription, ...] = (
     OpenAISensorDescription(
         key="input_tokens_month_to_date",
         translation_key="input_tokens_month_to_date",
-        native_unit_of_measurement=UnitOfInformation.ITEMS,
+        native_unit_of_measurement=TOKEN_UNIT,
         state_class=SensorStateClass.TOTAL,
         icon="mdi:text-box-arrow-right",
         value_fn=lambda c: c.data.month.input_tokens,
@@ -99,7 +100,7 @@ TOTAL_DESCRIPTIONS: tuple[OpenAISensorDescription, ...] = (
     OpenAISensorDescription(
         key="output_tokens_month_to_date",
         translation_key="output_tokens_month_to_date",
-        native_unit_of_measurement=UnitOfInformation.ITEMS,
+        native_unit_of_measurement=TOKEN_UNIT,
         state_class=SensorStateClass.TOTAL,
         icon="mdi:text-box-arrow-left",
         value_fn=lambda c: c.data.month.output_tokens,
@@ -107,7 +108,7 @@ TOTAL_DESCRIPTIONS: tuple[OpenAISensorDescription, ...] = (
     OpenAISensorDescription(
         key="total_tokens_month_to_date",
         translation_key="total_tokens_month_to_date",
-        native_unit_of_measurement=UnitOfInformation.ITEMS,
+        native_unit_of_measurement=TOKEN_UNIT,
         state_class=SensorStateClass.TOTAL,
         icon="mdi:text-box-multiple",
         value_fn=lambda c: c.data.month.total_tokens,
@@ -228,12 +229,22 @@ class OpenAIGroupedSensor(CoordinatorEntity[OpenAIUsageCoordinator], SensorEntit
         return {"name": self._display_name}
 
     @property
-    def native_value(self) -> float | None:
+    def native_value(self) -> float | int | None:
         aggregate = self._aggregate
-        return round(aggregate.cost, 6) if aggregate else None
+        if not aggregate:
+            return None
+        if self.group_type == "model":
+            return aggregate.total_tokens
+        return round(aggregate.cost, 6)
 
     @property
-    def native_unit_of_measurement(self) -> str:
+    def device_class(self) -> SensorDeviceClass | None:
+        return None if self.group_type == "model" else SensorDeviceClass.MONETARY
+
+    @property
+    def native_unit_of_measurement(self) -> str | None:
+        if self.group_type == "model":
+            return TOKEN_UNIT
         return self.coordinator.data.month.currency
 
     @property

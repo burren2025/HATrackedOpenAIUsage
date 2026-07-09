@@ -66,7 +66,7 @@
       "estimated_credit_remaining": { "name": "Estimated credit remaining" },
       "api_key_usage": { "name": "API key {name} cost" },
       "project_usage": { "name": "Project {name} cost" },
-      "model_usage": { "name": "Model {name} cost" }
+      "model_usage": { "name": "Model {name} tokens" }
     }
   },
   "issues": {
