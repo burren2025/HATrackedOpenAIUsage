@@ -1,0 +1,58 @@
+automation:
+  - alias: OpenAI daily spend warning
+    triggers:
+      - trigger: numeric_state
+        entity_id: sensor.openai_cost_today
+        above: 25
+    actions:
+      - action: notify.notify
+        data:
+          message: "OpenAI API spend today is ${{ states('sensor.openai_cost_today') }}."
+
+  - alias: OpenAI estimated remaining credit warning
+    triggers:
+      - trigger: numeric_state
+        entity_id: sensor.openai_estimated_credit_remaining
+        below: 50
+    actions:
+      - action: notify.notify
+        data:
+          message: "Estimated OpenAI credit remaining is ${{ states('sensor.openai_estimated_credit_remaining') }}."
+
+  - alias: OpenAI projected month end over budget
+    triggers:
+      - trigger: template
+        value_template: >
+          {{ state_attr('sensor.openai_estimated_credit_remaining', 'projected_month_end_cost') | float(0)
+             > state_attr('sensor.openai_estimated_credit_remaining', 'configured_budget') | float(0) }}
+    actions:
+      - action: notify.notify
+        data:
+          message: "Projected OpenAI month-end cost exceeds the configured budget."
+
+  - alias: OpenAI single API key daily spend warning
+    triggers:
+      - trigger: template
+        value_template: >
+          {{ states.sensor
+             | selectattr('entity_id', 'search', 'openai.*api_key.*cost')
+             | map(attribute='state')
+             | map('float', 0)
+             | max(default=0) > 10 }}
+    actions:
+      - action: notify.notify
+        data:
+          message: "At least one OpenAI API key has exceeded the daily spend threshold."
+
+  - alias: OpenAI unknown API key appeared
+    triggers:
+      - trigger: state
+        entity_id: sensor.openai_cost_month_to_date
+    conditions:
+      - condition: template
+        value_template: >
+          {{ state_attr('sensor.openai_cost_month_to_date', 'usage_categories') is not none }}
+    actions:
+      - action: notify.notify
+        data:
+          message: "Review OpenAI API key sensors for any new key IDs without local aliases."

@@ -1,0 +1,142 @@
+"""Async client for the official OpenAI Admin Usage and Costs APIs."""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+from dataclasses import dataclass
+from typing import Any
+
+from aiohttp import ClientError, ClientResponse, ClientSession
+
+from .const import API_BASE_URL, COSTS_ENDPOINT, USAGE_ENDPOINTS
+
+_LOGGER = logging.getLogger(__name__)
+
+
+class OpenAIUsageError(Exception):
+    """Base API error."""
+
+
+class OpenAIAuthError(OpenAIUsageError):
+    """Raised when the API key is invalid or lacks access."""
+
+
+class OpenAIRateLimitError(OpenAIUsageError):
+    """Raised when OpenAI rate limits the request."""
+
+
+class OpenAIUnavailableError(OpenAIUsageError):
+    """Raised for temporary transport/server failures."""
+
+
+@dataclass(slots=True)
+class OpenAIAdminClient:
+    """Small aiohttp wrapper around OpenAI Admin usage endpoints."""
+
+    session: ClientSession
+    admin_api_key: str
+    base_url: str = API_BASE_URL
+
+    async def validate_key(self) -> None:
+        """Validate credentials with the least expensive required endpoint."""
+        await self.fetch_costs(start_time=0, end_time=1, limit=1)
+
+    async def fetch_usage(
+        self,
+        category: str,
+        *,
+        start_time: int,
+        end_time: int,
+        group_by: list[str] | None = None,
+        limit: int = 31,
+    ) -> list[dict[str, Any]]:
+        """Fetch all pages for one usage category."""
+        endpoint = USAGE_ENDPOINTS[category]
+        params: dict[str, Any] = {
+            "start_time": start_time,
+            "end_time": end_time,
+            "bucket_width": "1d",
+            "limit": limit,
+        }
+        if group_by:
+            params["group_by"] = group_by
+        return await self._fetch_paginated(endpoint, params)
+
+    async def fetch_costs(
+        self,
+        *,
+        start_time: int,
+        end_time: int,
+        group_by: list[str] | None = None,
+        limit: int = 31,
+    ) -> list[dict[str, Any]]:
+        """Fetch all pages from the costs endpoint."""
+        params: dict[str, Any] = {
+            "start_time": start_time,
+            "end_time": end_time,
+            "bucket_width": "1d",
+            "limit": limit,
+        }
+        if group_by:
+            params["group_by"] = group_by
+        return await self._fetch_paginated(COSTS_ENDPOINT, params)
+
+    async def _fetch_paginated(
+        self, endpoint: str, params: dict[str, Any]
+    ) -> list[dict[str, Any]]:
+        buckets: list[dict[str, Any]] = []
+        page: str | None = None
+        while True:
+            request_params = dict(params)
+            if page:
+                request_params["page"] = page
+            payload = await self._request_json(endpoint, request_params)
+            buckets.extend(payload.get("data") or [])
+            page = payload.get("next_page") if payload.get("has_more") else None
+            if not page:
+                return buckets
+
+    async def _request_json(
+        self, endpoint: str, params: dict[str, Any]
+    ) -> dict[str, Any]:
+        url = f"{self.base_url}{endpoint}"
+        headers = {
+            "Authorization": f"Bearer {self.admin_api_key}",
+            "Content-Type": "application/json",
+        }
+        for attempt in range(3):
+            try:
+                async with self.session.get(
+                    url, headers=headers, params=params, timeout=30
+                ) as response:
+                    return await self._handle_response(response)
+            except OpenAIRateLimitError:
+                if attempt == 2:
+                    raise
+                await asyncio.sleep(2**attempt)
+            except (TimeoutError, ClientError) as err:
+                if attempt == 2:
+                    raise OpenAIUnavailableError("OpenAI API request failed") from err
+                await asyncio.sleep(2**attempt)
+        raise OpenAIUnavailableError("OpenAI API request failed")
+
+    async def _handle_response(self, response: ClientResponse) -> dict[str, Any]:
+        if response.status in (401, 403):
+            raise OpenAIAuthError("OpenAI Admin API key is invalid or unauthorized")
+        if response.status == 429:
+            raise OpenAIRateLimitError("OpenAI API rate limit exceeded")
+        if response.status >= 500:
+            raise OpenAIUnavailableError("OpenAI API is temporarily unavailable")
+        if response.status >= 400:
+            text = await response.text()
+            _LOGGER.debug("OpenAI Admin API returned HTTP %s: %s", response.status, text)
+            raise OpenAIUsageError(f"OpenAI Admin API returned HTTP {response.status}")
+        return await response.json()
+
+
+def redact_secret(value: str | None) -> str | None:
+    """Return a stable redacted representation of a secret."""
+    if not value:
+        return value
+    return f"{value[:4]}...redacted...{value[-4:]}" if len(value) >= 12 else "redacted"
