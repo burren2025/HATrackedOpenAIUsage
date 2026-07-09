@@ -9,6 +9,8 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
+QueryValue = str | int | float | list[str]
+
 from aiohttp import ClientError, ClientResponse, ClientSession
 
 from .const import API_BASE_URL, COSTS_ENDPOINT, USAGE_ENDPOINTS
@@ -99,7 +101,7 @@ class OpenAIAdminClient:
     async def fetch_projects(self) -> list[dict[str, Any]]:
         """Fetch organization project records, including archived projects."""
         return await self._fetch_list_paginated(
-            "/organization/projects", {"limit": 100, "include_archived": True}
+            "/organization/projects", {"limit": 100, "include_archived": "true"}
         )
 
     async def fetch_project_api_keys(self, project_id: str) -> list[dict[str, Any]]:
@@ -149,7 +151,7 @@ class OpenAIAdminClient:
         for attempt in range(3):
             try:
                 async with self.session.get(
-                    url, headers=headers, params=params, timeout=30
+                    url, headers=headers, params=_normalize_query_params(params), timeout=30
                 ) as response:
                     return await self._handle_response(response)
             except OpenAIRateLimitError:
@@ -220,3 +222,15 @@ def _redact_message(value: str) -> str:
 
 def _is_invalid_group_by(message: str) -> bool:
     return "invalid group_by value" in message.lower()
+
+
+def _normalize_query_params(params: dict[str, Any]) -> dict[str, QueryValue]:
+    normalized: dict[str, QueryValue] = {}
+    for key, value in params.items():
+        if isinstance(value, bool):
+            normalized[key] = str(value).lower()
+        elif isinstance(value, list):
+            normalized[key] = [str(item) for item in value]
+        elif value is not None:
+            normalized[key] = value
+    return normalized
