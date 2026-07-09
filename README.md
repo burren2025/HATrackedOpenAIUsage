@@ -96,7 +96,7 @@ API key record attributes include name, status, tracking ID, redacted key value,
 
 Project record attributes include name, status, tracking ID, created time, archived time, external key ID, associated API key summaries where available, monthly spend, requests, token totals, category breakdowns, and model breakdowns.
 
-Attributes also include line items where returned by the Costs API and last update time.
+Attributes also include line items where returned by the Costs API and last update time. Some OpenAI usage/cost endpoints support fewer grouping dimensions than others; unsupported key/project/model breakdowns are skipped automatically while cumulative totals continue to update.
 
 ## Credit and budget
 

@@ -194,13 +194,40 @@ class OpenAIUsageCoordinator(DataUpdateCoordinator[OpenAIUsageData]):
                     category,
                     start_time=month_start,
                     end_time=tomorrow_start,
-                    group_by=["api_key_id", "project_id", "model"],
+                    group_by=None,
                     limit=31,
                 )
             except OpenAIUsageError as err:
                 unavailable[category] = str(err)
                 continue
-            _add_usage_buckets(buckets, category, month, today_agg, by_key, by_project, by_model, today_start)
+            _add_usage_buckets(
+                buckets, category, month, today_agg, None, None, None, today_start
+            )
+
+            for grouping in ("api_key_id", "project_id", "model"):
+                try:
+                    grouped_buckets = await self.client.fetch_usage(
+                        category,
+                        start_time=month_start,
+                        end_time=tomorrow_start,
+                        group_by=[grouping],
+                        limit=31,
+                    )
+                except OpenAIUsageError as err:
+                    if _is_invalid_group_by_error(err):
+                        continue
+                    unavailable[f"{category}:{grouping}"] = str(err)
+                    continue
+                _add_usage_buckets(
+                    grouped_buckets,
+                    category,
+                    None,
+                    None,
+                    by_key if grouping == "api_key_id" else None,
+                    by_project if grouping == "project_id" else None,
+                    by_model if grouping == "model" else None,
+                    today_start,
+                )
 
         try:
             cost_buckets = await self.client.fetch_costs(
@@ -222,6 +249,8 @@ class OpenAIUsageCoordinator(DataUpdateCoordinator[OpenAIUsageData]):
                     limit=31,
                 )
             except OpenAIUsageError as err:
+                if _is_invalid_group_by_error(err):
+                    continue
                 unavailable["costs"] = str(err)
                 continue
             _add_cost_buckets(cost_buckets, None, None, by_key, by_project, today_start)
@@ -235,7 +264,8 @@ class OpenAIUsageCoordinator(DataUpdateCoordinator[OpenAIUsageData]):
             )
             _add_line_item_buckets(line_item_buckets, month, today_agg, today_start)
         except OpenAIUsageError as err:
-            unavailable["costs"] = str(err)
+            if not _is_invalid_group_by_error(err):
+                unavailable["costs"] = str(err)
 
         api_key_records, project_records = await self._fetch_inventory(unavailable)
         _ensure_usage_records(api_key_records, project_records, by_key, by_project)
@@ -325,27 +355,32 @@ class OpenAIUsageCoordinator(DataUpdateCoordinator[OpenAIUsageData]):
         return api_key_records, project_records
 
 
+def _is_invalid_group_by_error(err: OpenAIUsageError) -> bool:
+    return "invalid group_by value" in str(err).lower()
+
+
 def _add_usage_buckets(
     buckets: list[dict[str, Any]],
     category: str,
-    month: UsageAggregate,
-    today: UsageAggregate,
-    by_key: dict[str, UsageAggregate],
-    by_project: dict[str, UsageAggregate],
-    by_model: dict[str, UsageAggregate],
+    month: UsageAggregate | None,
+    today: UsageAggregate | None,
+    by_key: dict[str, UsageAggregate] | None,
+    by_project: dict[str, UsageAggregate] | None,
+    by_model: dict[str, UsageAggregate] | None,
     today_start: int,
 ) -> None:
     for bucket in buckets:
         is_today = int(bucket.get("start_time") or 0) >= today_start
         for result in bucket.get("results") or []:
-            month.add_tokens(result, category)
-            if is_today:
+            if month:
+                month.add_tokens(result, category)
+            if today and is_today:
                 today.add_tokens(result, category)
-            if result.get("api_key_id"):
+            if by_key is not None and result.get("api_key_id"):
                 by_key[str(result["api_key_id"])].add_tokens(result, category)
-            if result.get("project_id"):
+            if by_project is not None and result.get("project_id"):
                 by_project[str(result["project_id"])].add_tokens(result, category)
-            if result.get("model"):
+            if by_model is not None and result.get("model"):
                 by_model[str(result["model"])].add_tokens(result, category)
 
 

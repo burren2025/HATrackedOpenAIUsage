@@ -182,9 +182,14 @@ class OpenAIAdminClient:
             )
         if response.status >= 400:
             detail = _redact_message(await response.text())
-            _LOGGER.warning(
-                "OpenAI Admin API returned HTTP %s: %s", response.status, detail
-            )
+            if _is_invalid_group_by(detail):
+                _LOGGER.debug(
+                    "OpenAI Admin API does not support requested grouping: %s", detail
+                )
+            else:
+                _LOGGER.warning(
+                    "OpenAI Admin API returned HTTP %s: %s", response.status, detail
+                )
             raise OpenAIUsageError(
                 f"OpenAI Admin API returned HTTP {response.status}: {detail}",
                 response.status,
@@ -211,3 +216,7 @@ def _redact_message(value: str) -> str:
         error = parsed.get("error") if isinstance(parsed, dict) else None
         message = error.get("message", value) if isinstance(error, dict) else value
     return message.replace("Bearer ", "Bearer redacted-")
+
+
+def _is_invalid_group_by(message: str) -> bool:
+    return "invalid group_by value" in message.lower()
