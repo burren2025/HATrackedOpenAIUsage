@@ -90,6 +90,24 @@ class OpenAIAdminClient:
             params["group_by"] = group_by
         return await self._fetch_paginated(COSTS_ENDPOINT, params)
 
+    async def fetch_admin_api_keys(self) -> list[dict[str, Any]]:
+        """Fetch organization and project API key records visible to the Admin key."""
+        return await self._fetch_list_paginated(
+            "/organization/admin_api_keys", {"limit": 100, "order": "desc"}
+        )
+
+    async def fetch_projects(self) -> list[dict[str, Any]]:
+        """Fetch organization project records, including archived projects."""
+        return await self._fetch_list_paginated(
+            "/organization/projects", {"limit": 100, "include_archived": True}
+        )
+
+    async def fetch_project_api_keys(self, project_id: str) -> list[dict[str, Any]]:
+        """Fetch API key records for one project."""
+        return await self._fetch_list_paginated(
+            f"/organization/projects/{project_id}/api_keys", {"limit": 100}
+        )
+
     async def _fetch_paginated(
         self, endpoint: str, params: dict[str, Any]
     ) -> list[dict[str, Any]]:
@@ -104,6 +122,21 @@ class OpenAIAdminClient:
             page = payload.get("next_page") if payload.get("has_more") else None
             if not page:
                 return buckets
+
+    async def _fetch_list_paginated(
+        self, endpoint: str, params: dict[str, Any]
+    ) -> list[dict[str, Any]]:
+        records: list[dict[str, Any]] = []
+        after: str | None = None
+        while True:
+            request_params = dict(params)
+            if after:
+                request_params["after"] = after
+            payload = await self._request_json(endpoint, request_params)
+            records.extend(payload.get("data") or [])
+            after = payload.get("last_id") if payload.get("has_more") else None
+            if not after:
+                return records
 
     async def _request_json(
         self, endpoint: str, params: dict[str, Any]

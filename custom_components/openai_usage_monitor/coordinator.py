@@ -6,7 +6,7 @@ import calendar
 import logging
 from collections import defaultdict
 from dataclasses import dataclass, field
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
@@ -94,6 +94,36 @@ class UsageAggregate:
 
 
 @dataclass(slots=True)
+class APIKeyRecord:
+    """API key inventory metadata merged with monthly usage."""
+
+    id: str
+    name: str | None = None
+    redacted_value: str | None = None
+    created_at: str | None = None
+    expires_at: str | None = None
+    last_used_at: str | None = None
+    owner: dict[str, Any] | None = None
+    project_id: str | None = None
+    project_name: str | None = None
+    source: str = "usage"
+
+
+@dataclass(slots=True)
+class ProjectRecord:
+    """Project inventory metadata merged with monthly usage."""
+
+    id: str
+    name: str | None = None
+    status: str | None = None
+    created_at: str | None = None
+    archived_at: str | None = None
+    external_key_id: str | None = None
+    api_keys: list[dict[str, Any]] = field(default_factory=list)
+    source: str = "usage"
+
+
+@dataclass(slots=True)
 class OpenAIUsageData:
     """Normalized data exposed to entities."""
 
@@ -102,6 +132,8 @@ class OpenAIUsageData:
     api_keys: dict[str, UsageAggregate]
     projects: dict[str, UsageAggregate]
     models: dict[str, UsageAggregate]
+    api_key_records: dict[str, APIKeyRecord]
+    project_records: dict[str, ProjectRecord]
     unavailable_categories: dict[str, str]
     unknown_api_keys: list[str]
     budget: dict[str, Any]
@@ -205,6 +237,9 @@ class OpenAIUsageCoordinator(DataUpdateCoordinator[OpenAIUsageData]):
         except OpenAIUsageError as err:
             unavailable["costs"] = str(err)
 
+        api_key_records, project_records = await self._fetch_inventory(unavailable)
+        _ensure_usage_records(api_key_records, project_records, by_key, by_project)
+
         last_updated = dt_util.utcnow().isoformat()
         for agg in [month, today_agg, *by_key.values(), *by_project.values(), *by_model.values()]:
             agg.last_updated = last_updated
@@ -226,11 +261,68 @@ class OpenAIUsageCoordinator(DataUpdateCoordinator[OpenAIUsageData]):
             api_keys=dict(by_key),
             projects=dict(by_project),
             models=model_map,
+            api_key_records=api_key_records,
+            project_records=project_records,
             unavailable_categories=unavailable,
             unknown_api_keys=sorted(k for k in by_key if k),
             budget=budget,
             last_updated=last_updated,
         )
+
+    async def _fetch_inventory(
+        self, unavailable: dict[str, str]
+    ) -> tuple[dict[str, APIKeyRecord], dict[str, ProjectRecord]]:
+        api_key_records: dict[str, APIKeyRecord] = {}
+        project_records: dict[str, ProjectRecord] = {}
+
+        try:
+            projects = await self.client.fetch_projects()
+        except OpenAIUsageError as err:
+            unavailable["projects_inventory"] = str(err)
+            projects = []
+
+        for project in projects:
+            project_id = str(project.get("id") or "")
+            if not project_id:
+                continue
+            project_records[project_id] = _project_record_from_api(project)
+
+        try:
+            admin_keys = await self.client.fetch_admin_api_keys()
+        except OpenAIUsageError as err:
+            unavailable["api_key_inventory"] = str(err)
+            admin_keys = []
+
+        for key in admin_keys:
+            record = _api_key_record_from_api(key, source="admin_api_keys")
+            if record.id:
+                api_key_records[record.id] = record
+                if record.project_id and record.project_id in project_records:
+                    _append_project_key(project_records[record.project_id], record)
+
+        for project_id, project_record in project_records.items():
+            try:
+                project_keys = await self.client.fetch_project_api_keys(project_id)
+            except OpenAIUsageError as err:
+                unavailable[f"project_api_keys:{project_id}"] = str(err)
+                continue
+            for key in project_keys:
+                record = _api_key_record_from_api(
+                    key, source="project_api_keys", project_id=project_id, project_name=project_record.name
+                )
+                if not record.id:
+                    continue
+                existing = api_key_records.get(record.id)
+                if existing:
+                    if not existing.project_id:
+                        existing.project_id = record.project_id
+                    if not existing.project_name:
+                        existing.project_name = record.project_name
+                else:
+                    api_key_records[record.id] = record
+                _append_project_key(project_record, api_key_records[record.id])
+
+        return api_key_records, project_records
 
 
 def _add_usage_buckets(
@@ -305,6 +397,93 @@ def _add_line_item(aggregate: UsageAggregate, result: dict[str, Any]) -> None:
     item["quantity"] += result.get("quantity") or 0
     if amount.get("currency"):
         item["currency"] = str(amount["currency"]).upper()
+
+
+def _api_key_record_from_api(
+    payload: dict[str, Any],
+    *,
+    source: str,
+    project_id: str | None = None,
+    project_name: str | None = None,
+) -> APIKeyRecord:
+    owner = payload.get("owner") if isinstance(payload.get("owner"), dict) else None
+    project = payload.get("project") if isinstance(payload.get("project"), dict) else None
+    inferred_project_id = project_id or payload.get("project_id") or (project or {}).get("id")
+    inferred_project_name = project_name or (project or {}).get("name")
+    return APIKeyRecord(
+        id=str(payload.get("id") or ""),
+        name=payload.get("name"),
+        redacted_value=payload.get("redacted_value"),
+        created_at=_timestamp_attr(payload.get("created_at")),
+        expires_at=_timestamp_attr(payload.get("expires_at")),
+        last_used_at=_timestamp_attr(payload.get("last_used_at")),
+        owner=owner,
+        project_id=str(inferred_project_id) if inferred_project_id else None,
+        project_name=inferred_project_name,
+        source=source,
+    )
+
+
+def _project_record_from_api(payload: dict[str, Any]) -> ProjectRecord:
+    return ProjectRecord(
+        id=str(payload.get("id") or ""),
+        name=payload.get("name"),
+        status=payload.get("status") or ("archived" if payload.get("archived_at") else "active"),
+        created_at=_timestamp_attr(payload.get("created_at")),
+        archived_at=_timestamp_attr(payload.get("archived_at")),
+        external_key_id=payload.get("external_key_id"),
+        source="projects",
+    )
+
+
+def _ensure_usage_records(
+    api_key_records: dict[str, APIKeyRecord],
+    project_records: dict[str, ProjectRecord],
+    by_key: dict[str, UsageAggregate],
+    by_project: dict[str, UsageAggregate],
+) -> None:
+    for key_id in by_key:
+        api_key_records.setdefault(key_id, APIKeyRecord(id=key_id, source="usage"))
+    for project_id in by_project:
+        project_records.setdefault(project_id, ProjectRecord(id=project_id, source="usage"))
+
+
+def _append_project_key(project_record: ProjectRecord, key_record: APIKeyRecord) -> None:
+    key_summary = {
+        "id": key_record.id,
+        "name": key_record.name,
+        "status": _api_key_status(key_record),
+        "created_at": key_record.created_at,
+        "last_used_at": key_record.last_used_at,
+        "expires_at": key_record.expires_at,
+        "owner": key_record.owner,
+        "source": key_record.source,
+    }
+    if key_summary not in project_record.api_keys:
+        project_record.api_keys.append(key_summary)
+
+
+def _api_key_status(record: APIKeyRecord) -> str:
+    if record.expires_at:
+        try:
+            expires = datetime.fromisoformat(record.expires_at)
+        except ValueError:
+            return "unknown"
+        if expires.tzinfo is None:
+            expires = expires.replace(tzinfo=timezone.utc)
+        return "expired" if expires <= datetime.now(timezone.utc) else "active"
+    return "active"
+
+
+def _timestamp_attr(value: Any) -> str | None:
+    if value in (None, ""):
+        return None
+    if isinstance(value, str):
+        return value
+    try:
+        return dt_util.utc_from_timestamp(int(value)).isoformat()
+    except (TypeError, ValueError, OSError):
+        return None
 
 
 def _budget_attrs(configured_budget: Any, month_cost: float, today: date) -> dict[str, Any]:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -139,8 +140,8 @@ async def async_setup_entry(
     def grouped_entities() -> list[OpenAIGroupedSensor]:
         new_entities: list[OpenAIGroupedSensor] = []
         groups = (
-            ("api_key", coordinator.data.api_keys),
-            ("project", coordinator.data.projects),
+            ("api_key", coordinator.data.api_key_records),
+            ("project", coordinator.data.project_records),
             ("model", coordinator.data.models),
         )
         for group_type, values in groups:
@@ -231,11 +232,9 @@ class OpenAIGroupedSensor(CoordinatorEntity[OpenAIUsageCoordinator], SensorEntit
     @property
     def native_value(self) -> float | int | None:
         aggregate = self._aggregate
-        if not aggregate:
-            return None
         if self.group_type == "model":
-            return aggregate.total_tokens
-        return round(aggregate.cost, 6)
+            return aggregate.total_tokens if aggregate else None
+        return round(aggregate.cost, 6) if aggregate else 0
 
     @property
     def device_class(self) -> SensorDeviceClass | None:
@@ -249,12 +248,14 @@ class OpenAIGroupedSensor(CoordinatorEntity[OpenAIUsageCoordinator], SensorEntit
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        aggregate = self._aggregate
-        if not aggregate:
-            return {"id": self.group_id}
+        aggregate = self._aggregate or UsageAggregate()
         attrs = _aggregate_attrs(aggregate)
         attrs["id"] = self.group_id
         attrs["friendly_alias"] = self._display_name
+        if self.group_type == "api_key":
+            attrs.update(_api_key_record_attrs(self.coordinator, self.group_id))
+        elif self.group_type == "project":
+            attrs.update(_project_record_attrs(self.coordinator, self.group_id))
         return attrs
 
     @property
@@ -268,9 +269,15 @@ class OpenAIGroupedSensor(CoordinatorEntity[OpenAIUsageCoordinator], SensorEntit
     @property
     def _display_name(self) -> str:
         if self.group_type == "api_key":
-            return _aliases(self.entry, CONF_API_KEY_ALIASES).get(self.group_id, self.group_id)
+            record = self.coordinator.data.api_key_records.get(self.group_id)
+            return _aliases(self.entry, CONF_API_KEY_ALIASES).get(
+                self.group_id, (record.name if record and record.name else self.group_id)
+            )
         if self.group_type == "project":
-            return _aliases(self.entry, CONF_PROJECT_ALIASES).get(self.group_id, self.group_id)
+            record = self.coordinator.data.project_records.get(self.group_id)
+            return _aliases(self.entry, CONF_PROJECT_ALIASES).get(
+                self.group_id, (record.name if record and record.name else self.group_id)
+            )
         return self.group_id
 
 
@@ -287,6 +294,65 @@ def _aggregate_attrs(aggregate: UsageAggregate) -> dict[str, Any]:
         "usage_categories": aggregate.categories,
         "last_updated": aggregate.last_updated,
     }
+
+
+def _api_key_record_attrs(coordinator: OpenAIUsageCoordinator, key_id: str) -> dict[str, Any]:
+    record = coordinator.data.api_key_records.get(key_id)
+    if not record:
+        return {"tracking_id": key_id, "record_source": "usage"}
+    return {
+        "name": record.name,
+        "status": _api_key_status(record.expires_at),
+        "tracking_id": record.id,
+        "redacted_value": record.redacted_value,
+        "created_at": record.created_at,
+        "last_used_at": record.last_used_at,
+        "expires_at": record.expires_at,
+        "project_access": {
+            "project_id": record.project_id,
+            "project_name": record.project_name,
+        },
+        "created_by": _owner_name(record.owner),
+        "permissions": record.owner,
+        "record_source": record.source,
+        "monthly_spend": round((coordinator.data.api_keys.get(key_id) or UsageAggregate()).cost, 6),
+    }
+
+
+def _project_record_attrs(coordinator: OpenAIUsageCoordinator, project_id: str) -> dict[str, Any]:
+    record = coordinator.data.project_records.get(project_id)
+    if not record:
+        return {"tracking_id": project_id, "record_source": "usage"}
+    return {
+        "name": record.name,
+        "status": record.status,
+        "tracking_id": record.id,
+        "created_at": record.created_at,
+        "archived_at": record.archived_at,
+        "external_key_id": record.external_key_id,
+        "api_keys": record.api_keys,
+        "project_access": "project",
+        "record_source": record.source,
+        "monthly_spend": round((coordinator.data.projects.get(project_id) or UsageAggregate()).cost, 6),
+    }
+
+
+def _api_key_status(expires_at: str | None) -> str:
+    if not expires_at:
+        return "active"
+    try:
+        expires = datetime.fromisoformat(expires_at)
+    except ValueError:
+        return "unknown"
+    if expires.tzinfo is None:
+        expires = expires.replace(tzinfo=timezone.utc)
+    return "expired" if expires <= datetime.now(timezone.utc) else "active"
+
+
+def _owner_name(owner: dict[str, Any] | None) -> str | None:
+    if not owner:
+        return None
+    return owner.get("name") or owner.get("email") or owner.get("id")
 
 
 def _aliases(entry: ConfigEntry, key: str) -> dict[str, str]:

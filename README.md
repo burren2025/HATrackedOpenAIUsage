@@ -86,13 +86,17 @@ Organization totals:
 - `sensor.openai_total_tokens_month_to_date`
 - `sensor.openai_estimated_credit_remaining`
 
-Dynamic sensors are created when OpenAI returns grouped data:
+Dynamic sensors are created when OpenAI returns inventory or grouped usage data:
 
-- One cost sensor per API key ID
-- One cost sensor per project ID
-- Top-N model cost sensors
+- One monthly-spend record sensor per API key ID
+- One monthly-spend record sensor per project ID
+- Top-N model token sensors
 
-Attributes include cost, requests, token totals, category breakdowns, model breakdowns, line items where returned by the Costs API, and last update time.
+API key record attributes include name, status, tracking ID, redacted key value, created time, last-used time, expiration time, project access, owner/created-by metadata when returned by OpenAI, monthly spend, requests, token totals, category breakdowns, and model breakdowns.
+
+Project record attributes include name, status, tracking ID, created time, archived time, external key ID, associated API key summaries where available, monthly spend, requests, token totals, category breakdowns, and model breakdowns.
+
+Attributes also include line items where returned by the Costs API and last update time.
 
 ## Credit and budget
 
