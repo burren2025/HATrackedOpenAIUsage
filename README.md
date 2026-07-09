@@ -26,6 +26,24 @@ An OpenAI Admin API key is powerful. Use this only on a trusted Home Assistant i
 
 ## Installation
 
+### HACS custom repository
+
+HACS cannot install from private GitHub repositories. To use HACS for installation and updates, this repository must be public or moved to another public repository.
+
+Once public, add it in HACS:
+
+1. Open HACS.
+2. Open the three-dot menu and choose **Custom repositories**.
+3. Add `https://github.com/burren2025/HATrackedOpenAIUsage`.
+4. Select repository type **Integration**.
+5. Download **OpenAI Usage Monitor**.
+6. Restart Home Assistant.
+7. Add **OpenAI Usage Monitor** from **Settings > Devices & services > Add integration**.
+
+For updates, install new GitHub releases through HACS and restart Home Assistant when prompted.
+
+### Manual installation
+
 Copy `custom_components/openai_usage_monitor` into:
 
 ```text
@@ -33,12 +51,6 @@ config/custom_components/openai_usage_monitor
 ```
 
 Restart Home Assistant, then add **OpenAI Usage Monitor** from **Settings > Devices & services > Add integration**.
-
-For HACS-style manual installation, copy this repository into:
-
-```text
-config/custom_components/openai_usage_monitor
-```
 
 ## Configuration
 
