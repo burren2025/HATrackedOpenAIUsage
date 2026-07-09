@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 
 import voluptuous as vol
@@ -10,6 +11,8 @@ from homeassistant import config_entries
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .api import OpenAIAdminClient, OpenAIAuthError, OpenAIUsageError
+_LOGGER = logging.getLogger(__name__)
+
 from .const import (
     CONF_ADMIN_API_KEY,
     CONF_API_KEY_ALIASES,
@@ -43,9 +46,11 @@ class OpenAIUsageConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             self._abort_if_unique_id_configured()
             try:
                 await _validate_key(self.hass, user_input[CONF_ADMIN_API_KEY])
-            except OpenAIAuthError:
+            except OpenAIAuthError as err:
+                _LOGGER.warning("OpenAI Usage Monitor setup authentication failed: %s", err)
                 errors["base"] = "invalid_auth"
-            except OpenAIUsageError:
+            except OpenAIUsageError as err:
+                _LOGGER.warning("OpenAI Usage Monitor setup validation failed: %s", err)
                 errors["base"] = "cannot_connect"
             if not errors:
                 return self.async_create_entry(
@@ -89,9 +94,11 @@ class OpenAIUsageOptionsFlow(config_entries.OptionsFlow):
             if user_input.get(CONF_ADMIN_API_KEY):
                 try:
                     await _validate_key(self.hass, user_input[CONF_ADMIN_API_KEY])
-                except OpenAIAuthError:
+                except OpenAIAuthError as err:
+                    _LOGGER.warning("OpenAI Usage Monitor options authentication failed: %s", err)
                     errors["base"] = "invalid_auth"
-                except OpenAIUsageError:
+                except OpenAIUsageError as err:
+                    _LOGGER.warning("OpenAI Usage Monitor options validation failed: %s", err)
                     errors["base"] = "cannot_connect"
             for key in (CONF_API_KEY_ALIASES, CONF_PROJECT_ALIASES):
                 try:

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -16,6 +18,10 @@ _LOGGER = logging.getLogger(__name__)
 
 class OpenAIUsageError(Exception):
     """Base API error."""
+
+    def __init__(self, message: str, status: int | None = None) -> None:
+        super().__init__(message)
+        self.status = status
 
 
 class OpenAIAuthError(OpenAIUsageError):
@@ -40,7 +46,9 @@ class OpenAIAdminClient:
 
     async def validate_key(self) -> None:
         """Validate credentials with the least expensive required endpoint."""
-        await self.fetch_costs(start_time=0, end_time=1, limit=1)
+        end_time = int(time.time())
+        start_time = end_time - 24 * 60 * 60
+        await self.fetch_costs(start_time=start_time, end_time=end_time, limit=1)
 
     async def fetch_usage(
         self,
@@ -123,15 +131,31 @@ class OpenAIAdminClient:
 
     async def _handle_response(self, response: ClientResponse) -> dict[str, Any]:
         if response.status in (401, 403):
-            raise OpenAIAuthError("OpenAI Admin API key is invalid or unauthorized")
+            detail = _redact_message(await response.text())
+            _LOGGER.warning(
+                "OpenAI Admin API authentication failed with HTTP %s: %s",
+                response.status,
+                detail,
+            )
+            raise OpenAIAuthError(
+                f"OpenAI Admin API key is invalid or unauthorized: {detail}",
+                response.status,
+            )
         if response.status == 429:
-            raise OpenAIRateLimitError("OpenAI API rate limit exceeded")
+            raise OpenAIRateLimitError("OpenAI API rate limit exceeded", response.status)
         if response.status >= 500:
-            raise OpenAIUnavailableError("OpenAI API is temporarily unavailable")
+            raise OpenAIUnavailableError(
+                "OpenAI API is temporarily unavailable", response.status
+            )
         if response.status >= 400:
-            text = await response.text()
-            _LOGGER.debug("OpenAI Admin API returned HTTP %s: %s", response.status, text)
-            raise OpenAIUsageError(f"OpenAI Admin API returned HTTP {response.status}")
+            detail = _redact_message(await response.text())
+            _LOGGER.warning(
+                "OpenAI Admin API returned HTTP %s: %s", response.status, detail
+            )
+            raise OpenAIUsageError(
+                f"OpenAI Admin API returned HTTP {response.status}: {detail}",
+                response.status,
+            )
         return await response.json()
 
 
@@ -140,3 +164,17 @@ def redact_secret(value: str | None) -> str | None:
     if not value:
         return value
     return f"{value[:4]}...redacted...{value[-4:]}" if len(value) >= 12 else "redacted"
+
+
+def _redact_message(value: str) -> str:
+    """Redact obvious bearer/API key material from an API error message."""
+    if not value:
+        return "No response body"
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        message = value
+    else:
+        error = parsed.get("error") if isinstance(parsed, dict) else None
+        message = error.get("message", value) if isinstance(error, dict) else value
+    return message.replace("Bearer ", "Bearer redacted-")

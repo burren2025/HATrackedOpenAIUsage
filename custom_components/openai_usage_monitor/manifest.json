@@ -4,9 +4,9 @@
   "codeowners": [],
   "config_flow": true,
   "dependencies": [],
-  "documentation": "https://github.com/shorten/HATrackedOpenAIUsage",
+  "documentation": "https://github.com/burren2025/HATrackedOpenAIUsage",
   "iot_class": "cloud_polling",
-  "issue_tracker": "https://github.com/shorten/HATrackedOpenAIUsage/issues",
+  "issue_tracker": "https://github.com/burren2025/HATrackedOpenAIUsage/issues",
   "requirements": [],
-  "version": "0.1.0"
+  "version": "0.1.1"
 }
